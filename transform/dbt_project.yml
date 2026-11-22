@@ -1,0 +1,31 @@
+# The dbt project: what it's called, where things live, and how each layer is built.
+name: access_spend_assurance
+version: "1.0.0"
+profile: access_spend_assurance   # the connection to use, defined in profiles.yml
+
+model-paths: ["models"]
+test-paths: ["tests"]
+
+# Don't send anonymous usage statistics to dbt Labs.
+flags:
+  send_anonymous_usage_stats: false
+
+# How each folder of models is built. "+schema" adds a suffix to the dataset
+# named in profiles.yml (asa), so the layers land in separate datasets:
+#   asa_staging       cleaned, typed and masked copies of the raw tables
+#   asa_intermediate  joins across tables, e.g. a person's access in every system
+#   asa_checks        one table per check, listing its exceptions
+models:
+  access_spend_assurance:
+    staging:
+      +schema: staging
+      # Tables, not views. A BigQuery view needs read access to the tables under
+      # it, so masked views over asa_raw would force us to give the agent access
+      # to raw personal data. As tables, the masked data stands on its own.
+      +materialized: table
+    intermediate:
+      +schema: intermediate
+      +materialized: view    # built only from masked staging tables
+    checks:
+      +schema: checks
+      +materialized: table   # a fixed list of exceptions to score and investigate

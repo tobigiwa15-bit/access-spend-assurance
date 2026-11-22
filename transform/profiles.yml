@@ -1,0 +1,17 @@
+# How dbt connects to BigQuery. This file holds no secrets: every value that
+# differs between people or machines is read from an environment variable,
+# set from .env locally and from repository secrets in GitHub Actions.
+# That's why it can be committed, so a fresh clone can run dbt build.
+access_spend_assurance:
+  target: dev
+  outputs:
+    dev:
+      type: bigquery
+      method: service-account
+      project: "{{ env_var('GCP_PROJECT_ID') }}"
+      keyfile: "{{ env_var('GOOGLE_APPLICATION_CREDENTIALS') }}"   # the builder account
+      dataset: asa          # base name; each layer adds a suffix (see dbt_project.yml)
+      location: US          # same as asa_raw
+      threads: 4
+      job_execution_timeout_seconds: 300
+      priority: interactive

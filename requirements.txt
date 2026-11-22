@@ -8,3 +8,15 @@ Faker==40.63.0
 
 # Tables in memory, written out as CSV
 pandas==3.1.1
+
+# Talk to BigQuery: create datasets and load the raw tables
+google-cloud-bigquery==3.47.0
+
+# Read settings from the .env file into the environment
+python-dotenv==1.2.4
+
+# dbt Core and its BigQuery adapter: build, test and document the models in transform/.
+# dbt-core pulls in dbt-core-experimental-parser, whose installer downloads a 64 MB
+# file from GitHub. On a slow connection, download that file first (see the README).
+dbt-core==1.12.7
+dbt-bigquery==1.12.4

@@ -6,11 +6,10 @@ service-account*.json
 # Data (regenerate instead of committing)
 data/
 
-# dbt
+# dbt (transform/profiles.yml is committed: it reads every setting from the environment)
 target/
 dbt_packages/
 logs/
-profiles.yml
 
 # Python
 __pycache__/
