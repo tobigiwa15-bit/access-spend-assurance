@@ -14,8 +14,9 @@ Each person is used for at most one case, so cases don't overlap.
 Planting has its own random generator, so changing what we plant never changes
 the clean data underneath.
 
-generate_data.py calls plant_access() after building the clean tables. The tables
-arrive as lists of dicts (one dict per row) and are changed in place.
+generate_data.py calls plant_access() and plant_spend() after building the clean
+tables. The tables arrive as lists of dicts (one dict per row) and are changed
+in place.
 """
 
 from datetime import datetime, time, timedelta
@@ -38,6 +39,14 @@ SOD_PATTERNS = [
     ("Customer Service",    "cb_cs_officer",       "cb_cs_supervisor"),
 ]
 SOD_PER_PATTERN = 2
+
+N_RECURRING_VENDORS = 6     # look-alike: monthly vendor moves to a fixed fee for its last 6 bills
+RECURRING_MONTHS = 6
+N_DUPLICATE_INVOICES = 10   # same invoice entered and paid twice
+N_SPLIT_SETS = 8            # 2-3 POs to one vendor in a few days, each under the threshold
+N_BANK_MATCHES = 6          # vendor bank account is an employee's salary account
+N_SAME_DAY_VENDORS = 6      # new vendor created, approved, ordered from and paid in one day
+N_NO_INVOICE_PAYMENTS = 8   # payment with no invoice behind it
 
 LOGIN_WINDOW_DAYS = 90      # must match LOGIN_DAYS in generate_data.py
 
@@ -293,6 +302,204 @@ def plant_access(t, rng, as_of, at_work):
         add_case(key, "access_not_removed_after_move", "seeded_issue", "grant", g, "grant_id",
                  f"Moved from {moved_from[p['employee_id']]} to {p['department']} on "
                  f"{moved_on[p['employee_id']]}; kept {g['role']}")
+
+    return key
+
+
+# --- Spend issues -----------------------------------------------------------
+def plant_spend(t, rng, as_of, spend_start, threshold, pick_holder, fake):
+    """Plant the spend issues and look-alikes. Returns the answer-key cases.
+
+    pick_holder(rng, role, day) picks someone who held the role that day in the
+    clean access data, so every planted transaction is done by a plausible person.
+    """
+    key = []
+    used = set()   # vendors already in a case
+
+    vendors = {v["vendor_id"]: v for v in t["vendors"]}
+    invoices_of, pos_of = {}, {}
+    for inv in t["invoices"]:
+        invoices_of.setdefault(inv["vendor_id"], []).append(inv)
+    for po in t["purchase_orders"]:
+        pos_of.setdefault(po["vendor_id"], []).append(po)
+    payment_for = {p["invoice_id"]: p for p in t["payments"] if p["invoice_id"] is not None}
+
+    procurement_leads = [p for p in t["employees"]
+                         if p["department"] == "Procurement" and p["job_title"] == "Team Lead"]
+
+    def employed(p, day):
+        return p["hire_date"] <= day and (p["termination_date"] is None or day <= p["termination_date"])
+
+    def weekday_in(start, end):
+        return rng.choice(weekdays_between(start, end))
+
+    def on_or_after_weekday(day):
+        while day.weekday() >= 5:
+            day += timedelta(days=1)
+        return day
+
+    def ad_hoc_vendors_with_payments():
+        return [v for v in t["vendors"] if v["billing"] == "ad hoc" and v["vendor_id"] not in used
+                and any(i["invoice_id"] in payment_for for i in invoices_of.get(v["vendor_id"], []))]
+
+    def add_po(vendor, day, amount, requester, approver):
+        po = {"po_id": new_id("PO"), "vendor_id": vendor["vendor_id"], "po_date": day,
+              "amount": amount, "requested_by": requester, "approved_by": approver}
+        t["purchase_orders"].append(po)
+        pos_of.setdefault(vendor["vendor_id"], []).append(po)
+        return po
+
+    def add_invoice(vendor, po, day, amount, number, **extra):
+        inv = {"invoice_id": new_id("INV"), "vendor_id": vendor["vendor_id"], "po_id": po["po_id"],
+               "vendor_invoice_number": number, "invoice_date": day, "amount": amount,
+               "entered_by": pick_holder(rng, "erp_ap_clerk", day), **extra}
+        t["invoices"].append(inv)
+        invoices_of.setdefault(vendor["vendor_id"], []).append(inv)
+        return inv
+
+    def add_payment(vendor, invoice, day, amount):
+        pay = {"payment_id": new_id("PAY"), "vendor_id": vendor["vendor_id"],
+               "invoice_id": invoice["invoice_id"] if invoice else None, "payment_date": day,
+               "amount": amount, "approved_by": pick_holder(rng, "erp_payment_approver", day)}
+        t["payments"].append(pay)
+        return pay
+
+    def prefix_of(vendor):
+        return invoices_of[vendor["vendor_id"]][0]["vendor_invoice_number"].split("-")[0]
+
+    # 1. Look-alike: monthly vendors that moved to a fixed fee for their last six
+    #    bills. Same vendor, same amount every month: it looks like a duplicate,
+    #    but the invoice numbers and dates move on each month.
+    monthly = [v for v in t["vendors"]
+               if v["billing"] == "monthly" and len(invoices_of.get(v["vendor_id"], [])) >= 12]
+    for v in rng.sample(monthly, N_RECURRING_VENDORS):
+        used.add(v["vendor_id"])
+        last = sorted(invoices_of[v["vendor_id"]], key=lambda i: i["invoice_date"])[-RECURRING_MONTHS:]
+        fee = round(last[0]["amount"], -3)
+        for n, inv in enumerate(last):
+            inv["amount"] = fee
+            if inv["invoice_id"] in payment_for:
+                payment_for[inv["invoice_id"]]["amount"] = fee
+            if n > 0:
+                add_case(key, "duplicate_invoice", "look_alike", "invoice", inv, "invoice_id",
+                         f"Fixed monthly fee of {fee:,.0f} from {last[0]['invoice_date']:%b %Y}; "
+                         f"bill {n + 1} of {RECURRING_MONTHS}")
+
+    # 2. Duplicate invoices: an invoice entered again 3-25 days later and paid twice.
+    #    Half reuse the exact invoice number; half alter it slightly (a suffix, a
+    #    missing dash), which is how duplicates get past a simple number match.
+    #    The final number is set when invoices are numbered (generate_data.py).
+    def paid_invoices_to_copy(v):
+        """Paid invoices early enough that a copy can be entered and paid before AS_OF."""
+        return [inv for inv in invoices_of.get(v["vendor_id"], []) if inv["invoice_id"] in payment_for
+                and inv["invoice_date"] <= as_of - timedelta(days=90)]
+
+    pool = [v for v in ad_hoc_vendors_with_payments() if paid_invoices_to_copy(v)]
+    for i, v in enumerate(rng.sample(pool, N_DUPLICATE_INVOICES)):
+        used.add(v["vendor_id"])
+        original = rng.choice(paid_invoices_to_copy(v))
+        day = on_or_after_weekday(original["invoice_date"] + timedelta(days=rng.randint(3, 25)))
+        po = next(p for p in pos_of[v["vendor_id"]] if p["po_id"] == original["po_id"])
+        style = "same" if i % 2 == 0 else "altered"
+        dup = add_invoice(v, po, day, original["amount"], original["vendor_invoice_number"],
+                          _duplicate_of=original, _number_style=style)
+        add_payment(v, dup, on_or_after_weekday(day + timedelta(days=rng.randint(14, 45))), dup["amount"])
+        add_case(key, "duplicate_invoice", "seeded_issue", "invoice", dup, "invoice_id",
+                 f"Re-entry of an invoice dated {original['invoice_date']} for "
+                 f"{original['amount']:,.2f}, {'same' if style == 'same' else 'altered'} invoice number; "
+                 f"paid twice")
+
+    # 3. Split purchases: one purchase split into 2-3 POs over a few days, each under
+    #    the threshold so a team lead could approve it instead of the Head of
+    #    Procurement. Placed at least 25 days from the vendor's other POs, so the
+    #    set is unambiguous.
+    pool = ad_hoc_vendors_with_payments()
+    sets_done = 0
+    for v in rng.sample(pool, len(pool)):
+        if sets_done == N_SPLIT_SETS:
+            break
+        other_dates = [p["po_date"] for p in pos_of.get(v["vendor_id"], [])]
+        # Late enough in the period to leave room for PO, invoice and payment before AS_OF.
+        day = weekday_in(spend_start + timedelta(days=20), as_of - timedelta(days=95))
+        if any(abs((day - d).days) < 25 for d in other_dates):
+            continue
+        parts = rng.choice([2, 3])
+        total = rng.uniform(5_200_000, 9_500_000) if parts == 2 else rng.uniform(7_000_000, 14_000_000)
+        weights = [rng.uniform(0.8, 1.2) for _ in range(parts)]
+        amounts = [round(total * w / sum(weights), 2) for w in weights]
+        if max(amounts) >= threshold:
+            continue
+        leads = [p for p in procurement_leads if employed(p, day)]
+        requester = pick_holder(rng, "erp_requisitioner", day)
+        leads = [p for p in leads if p["employee_id"] != requester]
+        if not leads:
+            continue
+        approver = rng.choice(leads)["employee_id"]
+        used.add(v["vendor_id"])
+        sets_done += 1
+        po_days = sorted(on_or_after_weekday(day + timedelta(days=rng.randint(0, 4))) for _ in range(parts))
+        for n, (po_day, amount) in enumerate(zip(po_days, amounts), start=1):
+            po = add_po(v, po_day, amount, requester, approver)
+            inv_day = on_or_after_weekday(po_day + timedelta(days=rng.randint(5, 30)))
+            inv = add_invoice(v, po, inv_day, amount, f"{prefix_of(v)}-0000")
+            add_payment(v, inv, on_or_after_weekday(inv_day + timedelta(days=rng.randint(14, 45))), amount)
+            add_case(key, "split_purchase", "seeded_issue", "purchase_order", po, "po_id",
+                     f"Part {n} of {parts}: POs from {po_days[0]} to {po_days[-1]} totalling "
+                     f"{sum(amounts):,.2f}, each under {threshold:,}, all approved by {approver}")
+
+    # 4. Vendor bank account matches an employee's salary account. Half are
+    #    Procurement or Finance staff, who could set up or pay such a vendor.
+    pool = ad_hoc_vendors_with_payments()
+    current = [p for p in t["employees"] if p["termination_date"] is None]
+    insiders = [p for p in current if p["department"] in ("Procurement", "Finance")]
+    people = rng.sample(insiders, N_BANK_MATCHES // 2) + rng.sample(current, N_BANK_MATCHES - N_BANK_MATCHES // 2)
+    for v, p in zip(rng.sample(pool, N_BANK_MATCHES), people):
+        used.add(v["vendor_id"])
+        v["bank_account_number"] = p["bank_account_number"]
+        add_case(key, "vendor_bank_matches_employee", "seeded_issue", "vendor", v, "vendor_id",
+                 f"Bank account is the salary account of {p['employee_id']} ({p['department']})")
+
+    # 5. New vendors created, approved, ordered from, invoiced and paid on the same day.
+    taken_names = {v["vendor_name"] for v in t["vendors"]}
+    taken_accounts = {v["bank_account_number"] for v in t["vendors"]} | {p["bank_account_number"] for p in t["employees"]}
+    categories = sorted({v["category"] for v in t["vendors"] if v["billing"] == "ad hoc"})
+    banks = sorted({v["bank_name"] for v in t["vendors"]})
+    for _ in range(N_SAME_DAY_VENDORS):
+        day = weekday_in(spend_start + timedelta(days=30), as_of - timedelta(days=10))
+        name = fake.company()
+        while name in taken_names:
+            name = fake.company()
+        taken_names.add(name)
+        account = f"{rng.randrange(10**10):010d}"
+        while account in taken_accounts:
+            account = f"{rng.randrange(10**10):010d}"
+        taken_accounts.add(account)
+        created_by = pick_holder(rng, "erp_vendor_maintain", day)
+        v = {"vendor_id": new_id("V"), "vendor_name": name, "category": rng.choice(categories),
+             "billing": "ad hoc", "bank_name": rng.choice(banks), "bank_account_number": account,
+             "created_date": day, "created_by": created_by, "approved_date": day,
+             "approved_by": pick_holder(rng, "erp_vendor_approver", day, not_this=created_by)}
+        t["vendors"].append(v)
+        used.add(v["vendor_id"])
+        amount = round(rng.uniform(800_000, 4_500_000), 2)
+        requester = pick_holder(rng, "erp_requisitioner", day)
+        approver = rng.choice([p for p in procurement_leads
+                               if employed(p, day) and p["employee_id"] != requester])["employee_id"]
+        po = add_po(v, day, amount, requester, approver)
+        prefix = "".join(rng.choice("ABCDEFGHJKLMNPRSTUVWXYZ") for _ in range(3))
+        inv = add_invoice(v, po, day, amount, f"{prefix}-0000")
+        add_payment(v, inv, day, amount)
+        add_case(key, "vendor_created_and_paid_same_day", "seeded_issue", "vendor", v, "vendor_id",
+                 f"Created, approved and paid {amount:,.2f} on {day}")
+
+    # 6. Payments with no invoice behind them.
+    pool = ad_hoc_vendors_with_payments()
+    for v in rng.sample(pool, N_NO_INVOICE_PAYMENTS):
+        used.add(v["vendor_id"])
+        day = weekday_in(spend_start + timedelta(days=30), as_of - timedelta(days=5))
+        pay = add_payment(v, None, day, round(rng.uniform(300_000, 4_800_000), 2))
+        add_case(key, "payment_without_invoice", "seeded_issue", "payment", pay, "payment_id",
+                 f"Payment of {pay['amount']:,.2f} on {day} with no invoice")
 
     return key
 

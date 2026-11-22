@@ -510,9 +510,10 @@ def on_weekday(day):
     return day
 
 
-def make_spend(employees, hr_events, accounts, access_grants, rng, fake):
+def make_role_picker(employees, hr_events, accounts, access_grants):
+    """Return a function that picks someone at work who held a role on a given day.
+    Used for the clean spend data and again when planting spend issues."""
     at_work = make_at_work(employees, hr_events)
-    people = employees.to_dict("records")
 
     # Who held each role, and when.
     owner = dict(zip(accounts["account_id"], accounts["employee_id"]))
@@ -520,14 +521,24 @@ def make_spend(employees, hr_events, accounts, access_grants, rng, fake):
     for g in access_grants.to_dict("records"):
         held.setdefault(g["role"], []).append((owner[g["account_id"]], g["granted_date"], g["revoked_date"]))
 
-    def pick_holder(role, day, not_this=None):
-        """Someone at work who held the role on that day."""
+    def pick(rng, role, day, not_this=None):
         candidates = sorted({eid for eid, start, end in held[role]
                              if start <= day and (end is None or day < end)
                              and at_work(eid, day) and eid != not_this})
         if not candidates:
             raise RuntimeError(f"Nobody held {role} on {day}. Adjust the settings.")
         return rng.choice(candidates)
+
+    return pick
+
+
+def make_spend(employees, hr_events, accounts, access_grants, rng, fake):
+    people = employees.to_dict("records")
+    pick = make_role_picker(employees, hr_events, accounts, access_grants)
+
+    def pick_holder(role, day, not_this=None):
+        """Someone at work who held the role on that day."""
+        return pick(rng, role, day, not_this)
 
     head_of_procurement = next(p for p in people if p["job_title"] == "Head of Procurement")
     head_of_finance = next(p for p in people if p["job_title"] == "Head of Finance")
@@ -587,6 +598,8 @@ def make_spend(employees, hr_events, accounts, access_grants, rng, fake):
 
         # Spending starts at the audit period, or once the new vendor is ready.
         spend_from = max(SPEND_START, approved + timedelta(days=VENDOR_FIRST_USE_DAYS))
+        # Each vendor's invoice-number prefix. The numbers after it are provisional:
+        # assign_invoice_numbers() sets the final ones after planting.
         prefix = "".join(rng.choice("ABCDEFGHJKLMNPRSTUVWXYZ") for _ in range(3))
 
         # Each vendor's invoices: (po_index, invoice_date, amount).
@@ -715,6 +728,35 @@ def assign_ids(t):
              lambda x: (x["payment_date"], x["vendor_id"], x["amount"]))
 
 
+def assign_invoice_numbers(t, rng):
+    """Give each vendor's invoices their final numbers, in date order, after planting.
+
+    Vendors number their own invoices and bill other customers too, so the numbers
+    we receive rise over time with gaps. Numbering after planting means a planted
+    invoice can't be spotted by a number that's out of sequence. A planted duplicate
+    takes its original's number, either exactly or slightly altered.
+    """
+    by_vendor = {}
+    for inv in t["invoices"]:
+        by_vendor.setdefault(inv["vendor_id"], []).append(inv)
+
+    for vendor_id in sorted(by_vendor):
+        invoices = by_vendor[vendor_id]
+        prefix = invoices[0]["vendor_invoice_number"].split("-")[0]
+        originals = sorted((i for i in invoices if "_duplicate_of" not in i),
+                           key=lambda i: (i["invoice_date"], i["amount"]))
+        n = rng.randint(100, 5000)
+        for inv in originals:
+            n += rng.randint(1, 40)
+            inv["vendor_invoice_number"] = f"{prefix}-{n:05d}"
+        for inv in invoices:
+            if "_duplicate_of" in inv:
+                number = inv["_duplicate_of"]["vendor_invoice_number"]
+                if inv["_number_style"] == "altered":
+                    number = rng.choice([number + "A", number.replace("-", ""), number.replace("-", "-0")])
+                inv["vendor_invoice_number"] = number
+
+
 # --- Run --------------------------------------------------------------------
 def main():
     # One random generator for our own choices, and Faker seeded the same way for names.
@@ -751,10 +793,18 @@ def main():
 
     # Plant the issues and look-alikes, with their own random generator (SEED + 1)
     # so that changing what we plant never changes the clean data.
+    plant_rng = random.Random(SEED + 1)
+    plant_fake = Faker("en_NG")
+    plant_fake.seed_instance(SEED + 1)
+    # Spend plants pick people from the clean access data, before access plants change it.
+    pick_holder = make_role_picker(employees, hr_events, accounts, access_grants)
+
     rows = {name: to_rows(df) for name, df in tables.items()}
-    cases = plant_issues.plant_access(rows, random.Random(SEED + 1), AS_OF,
-                                      make_at_work(employees, hr_events))
+    cases = plant_issues.plant_access(rows, plant_rng, AS_OF, make_at_work(employees, hr_events))
+    cases += plant_issues.plant_spend(rows, plant_rng, AS_OF, SPEND_START, APPROVAL_THRESHOLD,
+                                      pick_holder, plant_fake)
     assign_ids(rows)
+    assign_invoice_numbers(rows, random.Random(SEED + 2))
     answer_key = pd.DataFrame(plant_issues.answer_key_rows(cases),
                               columns=["case_id", "check_name", "case_type", "entity_type",
                                        "entity_id", "description"])
