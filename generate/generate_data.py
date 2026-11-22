@@ -7,6 +7,8 @@ So far this builds:
   roles         every role in the three systems (from access_model.py)
   sod_rules     pairs of functions one person must not hold together
   role_matrix   the roles each department should have
+  accounts      one account per person per system they have ever had access to
+  access_grants every role ever granted, with its approval and removal dates
 
 Everything comes from one fixed seed and one fixed "as of" date, so anyone who
 runs this gets identical files.
@@ -41,6 +43,13 @@ LEAD_RATE = 0.12               # share of each department who are team leads
 # the "leaver with an active account" check will flag them. The only thing that
 # clears them is the rehire event in hr_events.
 N_REHIRED_AS_CONTRACTOR = 12
+
+# Access settings
+SYSTEMS_LIVE = date(2015, 3, 1)    # access records start when the three systems went live
+APPROVAL_MAX_LEAD_DAYS = 3         # access is approved 0-3 days before it is granted
+LEAVER_REVOKE_MAX_LAG_DAYS = 2     # leavers lose access 0-2 days after their last day
+                                   # (the HR feed to IT isn't instant). The leaver check
+                                   # will need a grace period to allow for this.
 
 OUT_DIR = Path(__file__).resolve().parent.parent / "data"
 
@@ -219,6 +228,157 @@ def make_reference_tables():
     return roles, sod_rules, role_matrix
 
 
+# --- accounts and access_grants ---------------------------------------------
+# Clean joiner-mover-leaver (JML) process: we replay each person's HR history and
+# apply the role matrix at every step.
+#   joiner  -> grant the department's roles, approved by a manager
+#   mover   -> remove roles the new department doesn't need (on the move date),
+#              grant the new ones, keep any role both departments have
+#   leaver  -> remove everything, 0-2 days after the last day
+#   rehire  -> grant the department's staff roles again (the account is reused)
+# No issues are planted here. That happens in a separate pass, so the answer key
+# lists exactly what was planted.
+
+def is_employed(person, day):
+    """True if the person was on the payroll on that day (last day included)."""
+    left = person["termination_date"]
+    return person["hire_date"] <= day and (left is None or day <= left)
+
+
+def level_of(person):
+    title = person["job_title"]
+    return "lead" if title == "Team Lead" or title.startswith("Head of") else "staff"
+
+
+def make_access(employees, hr_events, rng):
+    people = employees.to_dict("records")
+    system_of = {r[1]: r[0] for r in access_model.ROLES}
+
+    # Managers by department, used to pick approvers.
+    head_of = {p["department"]: p for p in people if p["job_title"].startswith("Head of")}
+    leads_in = {d: [p for p in people if p["department"] == d and p["job_title"] == "Team Lead"]
+                for d in DEPARTMENTS}
+
+    # IT leads get one admin role each, handed out in turn.
+    it_leads = [p for p in people if p["department"] == "IT" and level_of(p) == "lead"]
+    admin_role = {p["employee_id"]: access_model.IT_ADMIN_ROLES[i % len(access_model.IT_ADMIN_ROLES)]
+                  for i, p in enumerate(it_leads)}
+
+    # The mover and rehire events, looked up by employee.
+    moves = {e["employee_id"]: (e["event_date"], e["from_department"])
+             for e in hr_events.to_dict("records") if e["event_type"] == "mover"}
+    rehires = {e["employee_id"]: e["event_date"]
+               for e in hr_events.to_dict("records") if e["event_type"] == "rehire"}
+
+    def roles_for(person, dept, level):
+        roles = list(access_model.ROLE_MATRIX[dept][level])
+        if dept == "IT" and level == "lead":
+            roles.append(admin_role[person["employee_id"]])
+        return roles
+
+    def pick_approver(person, dept, level, day):
+        """A manager in the department, employed on that day, who isn't the requester.
+        Staff are approved by a team lead, leads by the head of department, and heads
+        by another head of department."""
+        def ok(c):
+            return c["employee_id"] != person["employee_id"] and is_employed(c, day)
+
+        candidates = [c for c in leads_in[dept] if ok(c)] if level == "staff" else []
+        if not candidates and ok(head_of[dept]):
+            candidates = [head_of[dept]]
+        if not candidates:
+            candidates = [h for h in head_of.values() if ok(h)]
+        if not candidates:  # only possible in the company's first weeks
+            candidates = [c for c in people if ok(c)]
+        return rng.choice(candidates)["employee_id"]
+
+    grants = []
+    for p in people:
+        eid = p["employee_id"]
+
+        # The person's HR history as steps: (date, department, level).
+        # A department of None means they left.
+        if eid in moves:
+            move_date, old_dept = moves[eid]
+            steps = [(p["hire_date"], old_dept, "staff"), (move_date, p["department"], level_of(p))]
+        else:
+            steps = [(p["hire_date"], p["department"], level_of(p))]
+        if p["termination_date"] is not None:
+            steps.append((p["termination_date"], None, None))
+        if eid in rehires:
+            steps.append((rehires[eid], p["department"], "staff"))
+
+        # Anything before go-live collapses into one step on the go-live date.
+        before = [s for s in steps if s[0] < SYSTEMS_LIVE]
+        steps = [s for s in steps if s[0] >= SYSTEMS_LIVE]
+        if before and before[-1][1] is not None:
+            steps.insert(0, (SYSTEMS_LIVE, before[-1][1], before[-1][2]))
+
+        open_grants = {}  # role -> the grant that is currently active
+        for day, dept, level in steps:
+            if dept is None:  # leaver: remove everything
+                revoke_on = min(day + timedelta(days=rng.randint(0, LEAVER_REVOKE_MAX_LAG_DAYS)), AS_OF)
+                for g in open_grants.values():
+                    g["revoked_date"] = revoke_on
+                open_grants = {}
+                continue
+
+            new_roles = roles_for(p, dept, level)
+            for role in [r for r in open_grants if r not in new_roles]:
+                open_grants.pop(role)["revoked_date"] = day
+
+            to_grant = [r for r in new_roles if r not in open_grants]
+            if to_grant:
+                # One access request per HR step, covering all the new roles.
+                approval_date = day - timedelta(days=rng.randint(0, APPROVAL_MAX_LEAD_DAYS))
+                approver = pick_approver(p, dept, level, approval_date)
+                for role in to_grant:
+                    g = {"employee_id": eid, "system": system_of[role], "role": role,
+                         "grant_type": "standard", "approver_id": approver,
+                         "approval_date": approval_date, "granted_date": day,
+                         "revoked_date": None}
+                    grants.append(g)
+                    open_grants[role] = g
+
+    # Accounts: one per person per system. An account is active while any of its
+    # grants is still open; otherwise it was disabled when its last grant was removed.
+    username = {p["employee_id"]: p["email"].split("@")[0] for p in people}
+    by_account = {}
+    for g in grants:
+        by_account.setdefault((g["employee_id"], g["system"]), []).append(g)
+
+    accounts = []
+    for (eid, system), gs in by_account.items():
+        still_open = any(g["revoked_date"] is None for g in gs)
+        accounts.append({
+            "employee_id": eid,
+            "system": system,
+            "username": username[eid],
+            "status": "active" if still_open else "disabled",
+            "created_date": min(g["granted_date"] for g in gs),
+            "disabled_date": None if still_open else max(g["revoked_date"] for g in gs),
+        })
+
+    # Number the accounts in the order they were created, then link each grant to its account.
+    accounts.sort(key=lambda a: (a["created_date"], a["employee_id"], a["system"]))
+    account_id = {}
+    for i, a in enumerate(accounts, start=1):
+        a["account_id"] = f"A{i:05d}"
+        account_id[(a["employee_id"], a["system"])] = a["account_id"]
+
+    for g in grants:
+        g["account_id"] = account_id[(g["employee_id"], g["system"])]
+    grants.sort(key=lambda g: (g["granted_date"], g["account_id"], g["role"]))
+    for i, g in enumerate(grants, start=1):
+        g["grant_id"] = f"G{i:05d}"
+
+    accounts = pd.DataFrame(accounts)[["account_id", "employee_id", "system", "username",
+                                       "status", "created_date", "disabled_date"]]
+    grants = pd.DataFrame(grants)[["grant_id", "account_id", "role", "grant_type", "approver_id",
+                                   "approval_date", "granted_date", "revoked_date"]]
+    return accounts, grants
+
+
 # --- Run --------------------------------------------------------------------
 def main():
     # One random generator for our own choices, and Faker seeded the same way for names.
@@ -233,6 +393,7 @@ def main():
     employees = make_employees(rng, fake)
     hr_events = make_hr_events(employees, rng)
     roles, sod_rules, role_matrix = make_reference_tables()
+    accounts, access_grants = make_access(employees, hr_events, rng)
 
     OUT_DIR.mkdir(exist_ok=True)
     tables = {
@@ -241,6 +402,8 @@ def main():
         "roles": roles,
         "sod_rules": sod_rules,
         "role_matrix": role_matrix,
+        "accounts": accounts,
+        "access_grants": access_grants,
     }
     for name, df in tables.items():
         # lineterminator="\n" keeps the files byte-identical on Windows and on
