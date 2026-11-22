@@ -13,6 +13,7 @@ So far this builds:
   vendors       the vendor master file
   purchase_orders, invoices, payments
                 the purchase-to-pay flow over the two-year audit period
+  answer_key    every issue and look-alike planted afterwards (plant_issues.py)
 
 Everything comes from one fixed seed and one fixed "as of" date, so anyone who
 runs this gets identical files.
@@ -29,6 +30,7 @@ import pandas as pd
 from faker import Faker
 
 import access_model
+import plant_issues
 
 # --- Settings ---------------------------------------------------------------
 SEED = 42                      # change this and every table changes
@@ -664,6 +666,55 @@ def make_spend(employees, hr_events, accounts, access_grants, rng, fake):
     return vendors, pos, invoices, payments
 
 
+# --- After planting ---------------------------------------------------------
+def to_rows(df):
+    """A table as a list of dicts, one per row, with blanks as None."""
+    return [{k: (None if pd.isna(v) else v) for k, v in row.items()}
+            for row in df.to_dict("records")]
+
+
+def assign_ids(t):
+    """Number every table in date order, after planting.
+
+    Planted rows were added last. If they kept the next free IDs, the highest IDs
+    would give them away, which is the kind of shortcut that made project 1's
+    accuracy look perfect. Renumbering everything by date removes that tell.
+    Each mapping from old to new ID is applied to the tables that refer to it.
+    """
+    def renumber(rows, id_field, prefix, width, sort_key):
+        rows.sort(key=sort_key)
+        mapping = {}
+        for i, r in enumerate(rows, start=1):
+            mapping[r[id_field]] = f"{prefix}{i:0{width}d}"
+            r[id_field] = mapping[r[id_field]]
+        return mapping
+
+    def relink(rows, field, mapping):
+        for r in rows:
+            if r[field] is not None:
+                r[field] = mapping[r[field]]
+
+    acc = renumber(t["accounts"], "account_id", "A", 5,
+                   lambda a: (a["created_date"], a["employee_id"], a["system"]))
+    relink(t["access_grants"], "account_id", acc)
+    relink(t["logins"], "account_id", acc)
+    renumber(t["access_grants"], "grant_id", "G", 5,
+             lambda g: (g["granted_date"], g["account_id"], g["role"]))
+    renumber(t["logins"], "login_id", "L", 6, lambda x: (x["login_at"], x["account_id"]))
+
+    ven = renumber(t["vendors"], "vendor_id", "V", 4, lambda v: (v["created_date"], v["vendor_name"]))
+    for name in ("purchase_orders", "invoices", "payments"):
+        relink(t[name], "vendor_id", ven)
+    po = renumber(t["purchase_orders"], "po_id", "PO", 5,
+                  lambda x: (x["po_date"], x["vendor_id"], x["amount"]))
+    relink(t["invoices"], "po_id", po)
+    inv = renumber(t["invoices"], "invoice_id", "INV", 5,
+                   lambda x: (x["invoice_date"], x["vendor_id"], x["amount"]))
+    relink(t["payments"], "invoice_id", inv)
+    renumber(t["payments"], "payment_id", "PAY", 5,
+             lambda x: (x["payment_date"], x["vendor_id"], x["amount"]))
+
+
 # --- Run --------------------------------------------------------------------
 def main():
     # One random generator for our own choices, and Faker seeded the same way for names.
@@ -683,7 +734,6 @@ def main():
     vendors, purchase_orders, invoices, payments = make_spend(
         employees, hr_events, accounts, access_grants, rng, fake)
 
-    OUT_DIR.mkdir(exist_ok=True)
     tables = {
         "employees": employees,
         "hr_events": hr_events,
@@ -698,14 +748,28 @@ def main():
         "invoices": invoices,
         "payments": payments,
     }
-    for name, df in tables.items():
+
+    # Plant the issues and look-alikes, with their own random generator (SEED + 1)
+    # so that changing what we plant never changes the clean data.
+    rows = {name: to_rows(df) for name, df in tables.items()}
+    cases = plant_issues.plant_access(rows, random.Random(SEED + 1), AS_OF,
+                                      make_at_work(employees, hr_events))
+    assign_ids(rows)
+    answer_key = pd.DataFrame(plant_issues.answer_key_rows(cases),
+                              columns=["case_id", "check_name", "case_type", "entity_type",
+                                       "entity_id", "description"])
+
+    OUT_DIR.mkdir(exist_ok=True)
+    outputs = {name: pd.DataFrame(rows[name], columns=df.columns) for name, df in tables.items()}
+    outputs["answer_key"] = answer_key
+    for name, df in outputs.items():
         # lineterminator="\n" keeps the files byte-identical on Windows and on
         # GitHub's Linux machines (Windows would otherwise end lines with \r\n).
         df.to_csv(OUT_DIR / f"{name}.csv", index=False, lineterminator="\n")
-        print(f"{name:<12} {len(df):>6,} rows")
+        print(f"{name:<15} {len(df):>7,} rows")
 
-    print("\nhr_events by type:")
-    print(hr_events["event_type"].value_counts().to_string())
+    print("\nanswer_key:")
+    print(answer_key.groupby(["check_name", "case_type"]).size().to_string())
 
 
 if __name__ == "__main__":
