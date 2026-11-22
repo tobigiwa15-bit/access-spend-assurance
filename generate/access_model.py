@@ -56,9 +56,11 @@ SOD_RULES = [
 # --- Role matrix ------------------------------------------------------------
 # The access each department *should* have. "staff" is everyone; "lead" covers
 # team leads. The head of department gets the "head" roles if the department
-# lists them, and the "lead" roles otherwise. IT leads and the Head of IT also get
-# one admin role each, handed out in turn from IT_ADMIN_ROLES, so the admins are
-# spread across systems.
+# lists them, and the "lead" roles otherwise.
+#
+# Admins: IT leads, the Head of IT and one in every IT_STAFF_ADMIN_EVERY IT staff
+# (the DBAs and application support people) get one admin role each, handed out
+# in turn from IT_ADMIN_ROLES, so the admins are spread across systems.
 READ_ONLY = ["cb_read_only", "pc_viewer", "erp_read_only"]
 
 ROLE_MATRIX = {
@@ -87,6 +89,7 @@ ROLE_MATRIX = {
                             "lead":  ["cb_read_only"]},
 }
 IT_ADMIN_ROLES = ["cb_sys_admin", "cb_user_admin", "pc_admin", "erp_admin"]
+IT_STAFF_ADMIN_EVERY = 4
 
 
 def check_model_is_clean():
@@ -102,8 +105,9 @@ def check_model_is_clean():
     sets_to_check = [(dept, level, roles)
                      for dept, levels in ROLE_MATRIX.items()
                      for level, roles in levels.items()]
-    # An IT lead holds the IT lead roles plus one admin role.
-    sets_to_check += [("IT", f"lead + {admin}", ROLE_MATRIX["IT"]["lead"] + [admin])
+    # An IT admin holds their usual IT roles plus one admin role.
+    sets_to_check += [("IT", f"{level} + {admin}", ROLE_MATRIX["IT"][level] + [admin])
+                      for level in ROLE_MATRIX["IT"]
                       for admin in IT_ADMIN_ROLES]
 
     for dept, level, roles in sets_to_check:

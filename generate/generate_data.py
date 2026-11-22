@@ -250,13 +250,13 @@ def make_reference_tables():
                          columns=["system", "role", "is_privileged", "sod_function", "description"])
     sod_rules = pd.DataFrame(access_model.SOD_RULES,
                              columns=["function_a", "function_b", "risk"])
-    role_matrix = pd.DataFrame(
-        [(dept, level, role)
-         for dept, levels in access_model.ROLE_MATRIX.items()
-         for level, role_list in levels.items()
-         for role in role_list],
-        columns=["department", "level", "role"],
-    )
+    rows = [(dept, level, role)
+            for dept, levels in access_model.ROLE_MATRIX.items()
+            for level, role_list in levels.items()
+            for role in role_list]
+    # The admin roles a designated IT admin may hold (one each, on top of their IT roles).
+    rows += [("IT", "admin", role) for role in access_model.IT_ADMIN_ROLES]
+    role_matrix = pd.DataFrame(rows, columns=["department", "level", "role"])
     return roles, sod_rules, role_matrix
 
 
@@ -293,10 +293,14 @@ def make_access(employees, hr_events, rng):
     leads_in = {d: [p for p in people if p["department"] == d and p["job_title"] == "Team Lead"]
                 for d in DEPARTMENTS}
 
-    # IT leads and the Head of IT get one admin role each, handed out in turn.
-    it_leads = [p for p in people if p["department"] == "IT" and level_of(p) in ("lead", "head")]
+    # Admins: IT leads, the Head of IT, and every Nth member of IT staff.
+    # Each gets one admin role, handed out in turn.
+    it_people = [p for p in people if p["department"] == "IT"]
+    it_leads = [p for p in it_people if level_of(p) in ("lead", "head")]
+    it_staff = [p for p in it_people if level_of(p) == "staff"]
+    it_admins = it_leads + it_staff[::access_model.IT_STAFF_ADMIN_EVERY]
     admin_role = {p["employee_id"]: access_model.IT_ADMIN_ROLES[i % len(access_model.IT_ADMIN_ROLES)]
-                  for i, p in enumerate(it_leads)}
+                  for i, p in enumerate(it_admins)}
 
     # The mover and rehire events, looked up by employee.
     moves = {e["employee_id"]: (e["event_date"], e["from_department"])
@@ -309,7 +313,7 @@ def make_access(employees, hr_events, rng):
         if level == "head" and "head" not in levels:
             level = "lead"   # most departments give their head the lead roles
         roles = list(levels[level])
-        if dept == "IT" and level == "lead":
+        if dept == "IT" and person["employee_id"] in admin_role:
             roles.append(admin_role[person["employee_id"]])
         return roles
 
