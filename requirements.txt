@@ -1,0 +1,10 @@
+# Python packages this project needs. Install with: pip install -r requirements.txt
+# Versions are pinned (==) so every rerun, including GitHub Actions, uses exactly the same code.
+# Pinning Faker matters most: a different Faker version can produce different fake names
+# from the same seed, which would change the data.
+
+# Fake but realistic names for the synthetic company (Nigerian English locale)
+Faker==40.63.0
+
+# Tables in memory, written out as CSV
+pandas==3.1.1

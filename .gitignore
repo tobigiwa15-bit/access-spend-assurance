@@ -1,0 +1,23 @@
+# Secrets
+.env
+*.json.key
+service-account*.json
+
+# Data (regenerate instead of committing)
+data/
+
+# dbt
+target/
+dbt_packages/
+logs/
+profiles.yml
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# VS Code
+.vscode/
