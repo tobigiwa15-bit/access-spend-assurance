@@ -1,0 +1,41 @@
+# The raw tables dbt reads from: the loaded CSVs in asa_raw, every column text.
+# Models refer to them as {{ source('raw', 'employees') }}, so dbt knows where
+# the lineage starts. Only staging models may read sources; everything after
+# staging reads masked models through ref().
+version: 2
+
+sources:
+  - name: raw
+    database: "{{ env_var('GCP_PROJECT_ID') }}"
+    schema: asa_raw
+    description: Synthetic source data exactly as generated, loaded as text by load/load_raw.py.
+    tables:
+      - name: employees
+        description: HR roster on the as-of date. Contains names, emails and salary account numbers.
+        columns:
+          - name: employee_id
+            data_tests:
+              - unique
+              - not_null
+      - name: hr_events
+        description: Joiner, mover, leaver and rehire events.
+      - name: roles
+        description: Role catalogue for the three systems.
+      - name: sod_rules
+        description: Pairs of functions one person must not hold together.
+      - name: role_matrix
+        description: Roles each department and level should have.
+      - name: accounts
+        description: One account per person per system. Contains usernames.
+      - name: access_grants
+        description: Every role granted, with approval and removal dates.
+      - name: logins
+        description: First sign-in of the day per account, last 90 days.
+      - name: vendors
+        description: Vendor master file. Contains bank account numbers.
+      - name: purchase_orders
+        description: Purchase orders in the audit period.
+      - name: invoices
+        description: Supplier invoices in the audit period.
+      - name: payments
+        description: Supplier payments in the audit period.

@@ -1,0 +1,46 @@
+# Descriptions and tests for the staging models. dbt docs shows the descriptions;
+# dbt build runs the tests after building each model.
+version: 2
+
+models:
+  - name: stg_employees
+    description: >
+      HR roster with types applied and personal data protected. Names and emails
+      are dropped; IDs and bank accounts are pseudonymised with a keyed hash.
+      Known residual risk: a job title such as "Head of IT" belongs to one person,
+      so it could identify them to someone inside the company. It is kept because
+      checks and the agent need to know an approver's seniority.
+    columns:
+      - name: employee_hash
+        description: Keyed hash of the employee ID. The key for this person in every model.
+        data_tests:
+          - unique
+          - not_null
+      - name: manager_hash
+        description: Keyed hash of the line manager's employee ID. Empty for heads of department.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_employees')
+                field: employee_hash
+      - name: department
+        data_tests:
+          - not_null
+      - name: job_title
+      - name: employment_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["permanent", "contractor"]
+      - name: hire_date
+        data_tests:
+          - not_null
+      - name: termination_date
+        description: Last working day. Empty for people still employed.
+      - name: bank_account_masked
+        description: Salary account number with all but the last four digits hidden.
+      - name: bank_account_hash
+        description: Keyed hash of the full salary account number, for matching against vendors.
+        data_tests:
+          - unique
+          - not_null
