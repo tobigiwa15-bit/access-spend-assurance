@@ -202,3 +202,144 @@ models:
               arguments:
                 to: ref('stg_accounts')
                 field: account_id
+
+  - name: stg_vendors
+    description: >
+      Vendor master file. Bank accounts are masked and hashed with the same macros
+      as employees, so vendors and employees can be compared on bank_account_hash
+      without anyone seeing a full account number.
+    columns:
+      - name: vendor_id
+        data_tests:
+          - unique
+          - not_null
+      - name: vendor_name
+        data_tests:
+          - not_null
+      - name: billing
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["ad hoc", "monthly"]
+      - name: bank_account_hash
+        description: >
+          Keyed hash of the full account number. Not tested as unique: two vendors
+          sharing an account is something to investigate, not a data error.
+        data_tests:
+          - not_null
+      - name: created_by_hash
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_employees')
+                field: employee_hash
+      - name: approved_by_hash
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_employees')
+                field: employee_hash
+
+  - name: stg_purchase_orders
+    description: Purchase orders in the audit period, with requester and approver pseudonymised.
+    columns:
+      - name: po_id
+        data_tests:
+          - unique
+          - not_null
+      - name: vendor_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_vendors')
+                field: vendor_id
+      - name: amount
+        data_tests:
+          - not_null
+      - name: requested_by_hash
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_employees')
+                field: employee_hash
+      - name: approved_by_hash
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_employees')
+                field: employee_hash
+
+  - name: stg_invoices
+    description: Supplier invoices in the audit period, with the AP clerk pseudonymised.
+    columns:
+      - name: invoice_id
+        data_tests:
+          - unique
+          - not_null
+      - name: vendor_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_vendors')
+                field: vendor_id
+      - name: po_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_purchase_orders')
+                field: po_id
+      - name: vendor_invoice_number
+        description: >
+          The vendor's own invoice number. Not tested as unique: a repeated number
+          is what the duplicate-invoice check looks for.
+      - name: amount
+        data_tests:
+          - not_null
+      - name: entered_by_hash
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_employees')
+                field: employee_hash
+
+  - name: stg_payments
+    description: Supplier payments in the audit period, with the approver pseudonymised.
+    columns:
+      - name: payment_id
+        data_tests:
+          - unique
+          - not_null
+      - name: vendor_id
+        description: >
+          Every payment must go to a known vendor. Together, these two tests are the
+          plan's "no payment without a vendor" rule.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_vendors')
+                field: vendor_id
+      - name: invoice_id
+        description: >
+          Empty when a payment has no invoice. That is a control finding for the
+          checks, so it is not tested as not_null; the relationships test ignores
+          empty values.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_invoices')
+                field: invoice_id
+      - name: amount
+        data_tests:
+          - not_null
+      - name: approved_by_hash
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_employees')
+                field: employee_hash
