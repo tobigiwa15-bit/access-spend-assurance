@@ -44,3 +44,161 @@ models:
         data_tests:
           - unique
           - not_null
+
+  - name: stg_hr_events
+    description: Joiner, mover, leaver and rehire events, with the employee pseudonymised.
+    columns:
+      - name: event_id
+        data_tests:
+          - unique
+          - not_null
+      - name: employee_hash
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_employees')
+                field: employee_hash
+      - name: event_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["joiner", "mover", "leaver", "rehire"]
+      - name: event_date
+        data_tests:
+          - not_null
+
+  - name: stg_roles
+    description: Role catalogue for core banking, the payments console and the ERP.
+    columns:
+      - name: role
+        data_tests:
+          - unique
+          - not_null
+      - name: system
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["core_banking", "payments_console", "erp"]
+      - name: is_privileged
+        description: True for administrator roles, which can change system settings or other users' access.
+        data_tests:
+          - not_null
+      - name: sod_function
+        description: What the role lets you do, for segregation of duties. Empty if the role has no SoD relevance.
+
+  - name: stg_sod_rules
+    description: Pairs of functions one person must not hold together, even across systems.
+    columns:
+      - name: function_a
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_roles')
+                field: sod_function
+      - name: function_b
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_roles')
+                field: sod_function
+
+  - name: stg_role_matrix
+    description: The roles each department should have at each level (staff, lead, head, and IT admin).
+    columns:
+      - name: role
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_roles')
+                field: role
+      - name: level
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["staff", "lead", "head", "admin"]
+
+  - name: stg_accounts
+    description: One account per person per system. Usernames are dropped because they are built from names.
+    columns:
+      - name: account_id
+        data_tests:
+          - unique
+          - not_null
+      - name: employee_hash
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_employees')
+                field: employee_hash
+      - name: system
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["core_banking", "payments_console", "erp"]
+      - name: status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["active", "disabled"]
+
+  - name: stg_access_grants
+    description: Every role ever granted, with approver (pseudonymised), approval, grant and removal dates.
+    columns:
+      - name: grant_id
+        data_tests:
+          - unique
+          - not_null
+      - name: account_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_accounts')
+                field: account_id
+      - name: role
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_roles')
+                field: role
+      - name: grant_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["standard", "emergency"]
+      - name: approver_hash
+        description: >
+          Keyed hash of the approver's employee ID. Empty when there is no approval on
+          record, which is exactly what one of the checks looks for, so it is not tested
+          as not_null. The relationships test ignores empty values.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_employees')
+                field: employee_hash
+      - name: granted_date
+        data_tests:
+          - not_null
+      - name: revoked_date
+        description: Day the access was removed. Empty while it is still open.
+
+  - name: stg_logins
+    description: Each account's first sign-in of the day over the 90 days to the as-of date.
+    columns:
+      - name: login_id
+        data_tests:
+          - unique
+          - not_null
+      - name: account_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_accounts')
+                field: account_id
