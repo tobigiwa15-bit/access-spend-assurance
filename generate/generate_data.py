@@ -9,6 +9,7 @@ So far this builds:
   role_matrix   the roles each department should have
   accounts      one account per person per system they have ever had access to
   access_grants every role ever granted, with its approval and removal dates
+  logins        each account's first sign-in of the day, over the last 90 days
 
 Everything comes from one fixed seed and one fixed "as of" date, so anyone who
 runs this gets identical files.
@@ -18,7 +19,7 @@ Run from the project folder, with .venv active:
 """
 
 import random
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -50,6 +51,15 @@ APPROVAL_MAX_LEAD_DAYS = 3         # access is approved 0-3 days before it is gr
 LEAVER_REVOKE_MAX_LAG_DAYS = 2     # leavers lose access 0-2 days after their last day
                                    # (the HR feed to IT isn't instant). The leaver check
                                    # will need a grace period to allow for this.
+
+# Login settings
+LOGIN_DAYS = 90                    # login history covers the 90 days up to AS_OF
+LOW_USE_ROLES = {"cb_read_only", "pc_viewer", "erp_read_only", "erp_requisitioner"}
+LOGIN_RATE_LOW = 0.30              # chance of logging in on a working day, view-only users
+LOGIN_RATE_NORMAL = 0.85           # everyone else uses their systems most days
+MUST_LOG_IN_WITHIN_DAYS = 30       # every account still active on AS_OF has logged in
+                                   # within this many days, so the clean data has no
+                                   # dormant accounts. Only planted ones will be dormant.
 
 OUT_DIR = Path(__file__).resolve().parent.parent / "data"
 
@@ -379,6 +389,65 @@ def make_access(employees, hr_events, rng):
     return accounts, grants
 
 
+# --- logins -----------------------------------------------------------------
+# One row per account per day it was used: the first sign-in of that day.
+# An account can only be used on a working day when its owner is at work and
+# it has at least one open grant. So there are no logins after someone leaves,
+# none on a system after a mover's access to it was removed, and none between
+# a rehired contractor's leaving date and their return.
+
+def make_logins(employees, hr_events, accounts, access_grants, rng):
+    people = {p["employee_id"]: p for p in employees.to_dict("records")}
+    rehired_on = {e["employee_id"]: e["event_date"]
+                  for e in hr_events.to_dict("records") if e["event_type"] == "rehire"}
+    grants_of = {}
+    for g in access_grants.to_dict("records"):
+        grants_of.setdefault(g["account_id"], []).append(g)
+
+    def at_work(eid, day):
+        back = eid in rehired_on and day >= rehired_on[eid]
+        return is_employed(people[eid], day) or back
+
+    def open_roles(account_id, day):
+        # A grant is open from its granted_date up to the day before its revoked_date.
+        return {g["role"] for g in grants_of[account_id]
+                if g["granted_date"] <= day and (g["revoked_date"] is None or day < g["revoked_date"])}
+
+    first_day = AS_OF - timedelta(days=LOGIN_DAYS - 1)
+    all_days = [first_day + timedelta(days=i) for i in range(LOGIN_DAYS)]
+    working_days = [d for d in all_days if d.weekday() < 5]   # Monday to Friday
+    recent_cutoff = AS_OF - timedelta(days=MUST_LOG_IN_WITHIN_DAYS)
+
+    logins = []
+    for a in accounts.to_dict("records"):
+        login_days = []
+        usable_days = []
+        for d in working_days:
+            roles = open_roles(a["account_id"], d)
+            if not roles or not at_work(a["employee_id"], d):
+                continue
+            usable_days.append(d)
+            rate = LOGIN_RATE_LOW if roles <= LOW_USE_ROLES else LOGIN_RATE_NORMAL
+            if rng.random() < rate:
+                login_days.append(d)
+
+        # A light user can go weeks without logging in by chance. Make sure every
+        # account still active on AS_OF has at least one recent login.
+        recent = [d for d in usable_days if d > recent_cutoff]
+        if a["status"] == "active" and recent and not any(d > recent_cutoff for d in login_days):
+            login_days.append(rng.choice(recent))
+
+        for d in sorted(login_days):
+            minute = rng.randint(7 * 60 + 30, 10 * 60)   # between 07:30 and 10:00
+            logins.append({"account_id": a["account_id"],
+                           "login_at": datetime.combine(d, time(minute // 60, minute % 60))})
+
+    logins.sort(key=lambda x: (x["login_at"], x["account_id"]))
+    for i, x in enumerate(logins, start=1):
+        x["login_id"] = f"L{i:06d}"
+    return pd.DataFrame(logins)[["login_id", "account_id", "login_at"]]
+
+
 # --- Run --------------------------------------------------------------------
 def main():
     # One random generator for our own choices, and Faker seeded the same way for names.
@@ -394,6 +463,7 @@ def main():
     hr_events = make_hr_events(employees, rng)
     roles, sod_rules, role_matrix = make_reference_tables()
     accounts, access_grants = make_access(employees, hr_events, rng)
+    logins = make_logins(employees, hr_events, accounts, access_grants, rng)
 
     OUT_DIR.mkdir(exist_ok=True)
     tables = {
@@ -404,6 +474,7 @@ def main():
         "role_matrix": role_matrix,
         "accounts": accounts,
         "access_grants": access_grants,
+        "logins": logins,
     }
     for name, df in tables.items():
         # lineterminator="\n" keeps the files byte-identical on Windows and on
