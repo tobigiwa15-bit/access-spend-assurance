@@ -55,8 +55,10 @@ SOD_RULES = [
 
 # --- Role matrix ------------------------------------------------------------
 # The access each department *should* have. "staff" is everyone; "lead" covers
-# team leads and the head of department. IT leads also get one admin role each,
-# handed out in turn from IT_ADMIN_ROLES, so the admins are spread across systems.
+# team leads. The head of department gets the "head" roles if the department
+# lists them, and the "lead" roles otherwise. IT leads and the Head of IT also get
+# one admin role each, handed out in turn from IT_ADMIN_ROLES, so the admins are
+# spread across systems.
 READ_ONLY = ["cb_read_only", "pc_viewer", "erp_read_only"]
 
 ROLE_MATRIX = {
@@ -73,7 +75,10 @@ ROLE_MATRIX = {
     "Finance":             {"staff": ["erp_ap_clerk", "cb_gl_posting"],
                             "lead":  ["erp_payment_approver", "cb_gl_posting"]},
     "Procurement":         {"staff": ["erp_requisitioner", "erp_vendor_maintain"],
-                            "lead":  ["erp_requisitioner", "erp_vendor_approver"]},
+                            "lead":  ["erp_requisitioner", "erp_vendor_approver"],
+                            # The head approves POs above the threshold, so must not
+                            # be able to raise them.
+                            "head":  ["erp_vendor_approver"]},
     "Human Resources":     {"staff": ["erp_requisitioner"],
                             "lead":  ["erp_requisitioner"]},
     "Risk and Compliance": {"staff": READ_ONLY, "lead": READ_ONLY},
