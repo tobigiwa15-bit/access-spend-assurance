@@ -1,0 +1,11 @@
+check_name,population,flagged,seeded_issues,look_alikes,tp,fn,fn_outside_population,fp,fp_look_alike,fp_other,tn,precision,recall,false_positive_rate,look_alike_fp_rate
+access_not_removed_after_move,305,10,10,0,10,0,0,0,0,0,295,1.0,1.0,0.0,
+dormant_privileged_account,78,6,6,0,6,0,0,0,0,0,72,1.0,1.0,0.0,
+duplicate_invoice,4854,8,10,30,8,2,0,0,0,0,4844,1.0,0.8,0.0,0.0
+leaver_active_account,350,16,10,20,10,0,0,6,2,4,334,0.625,1.0,0.0176,0.1
+payment_without_invoice,4657,8,8,0,8,0,0,0,0,0,4649,1.0,1.0,0.0,
+privileged_without_approval,90,10,8,8,8,0,0,2,2,0,80,0.8,1.0,0.0244,0.25
+sod_conflict,1497,10,10,0,10,0,0,0,0,0,1487,1.0,1.0,0.0,
+split_purchase,3279,20,20,0,20,0,0,0,0,0,3259,1.0,1.0,0.0,
+vendor_bank_matches_employee,506,6,6,0,6,0,0,0,0,0,500,1.0,1.0,0.0,
+vendor_created_and_paid_same_day,97,6,6,0,6,0,0,0,0,0,91,1.0,1.0,0.0,

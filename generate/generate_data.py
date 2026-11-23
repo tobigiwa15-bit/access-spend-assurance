@@ -802,7 +802,7 @@ def main():
     rows = {name: to_rows(df) for name, df in tables.items()}
     cases = plant_issues.plant_access(rows, plant_rng, AS_OF, make_at_work(employees, hr_events))
     cases += plant_issues.plant_spend(rows, plant_rng, AS_OF, SPEND_START, APPROVAL_THRESHOLD,
-                                      pick_holder, plant_fake)
+                                      pick_holder, plant_fake, VENDOR_FIRST_USE_DAYS)
     assign_ids(rows)
     assign_invoice_numbers(rows, random.Random(SEED + 2))
     answer_key = pd.DataFrame(plant_issues.answer_key_rows(cases),

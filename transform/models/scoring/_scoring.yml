@@ -1,0 +1,86 @@
+# Descriptions and tests for the scoring models (dataset asa_scoring).
+version: 2
+
+models:
+  - name: score_answer_key
+    description: >
+      The answer key with employee IDs hashed, both as entity keys (check 3) and
+      inside the descriptions. One row per planted issue or look-alike.
+    columns:
+      - name: case_id
+        data_tests:
+          - unique
+          - not_null
+      - name: check_name
+        data_tests:
+          - accepted_values:
+              arguments:
+                values:
+                  - leaver_active_account
+                  - privileged_without_approval
+                  - sod_conflict
+                  - dormant_privileged_account
+                  - access_not_removed_after_move
+                  - duplicate_invoice
+                  - split_purchase
+                  - vendor_bank_matches_employee
+                  - vendor_created_and_paid_same_day
+                  - payment_without_invoice
+      - name: case_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["seeded_issue", "look_alike"]
+      - name: entity_key
+        description: The entity at the check's output grain. A keyed hash for people, a system ID otherwise.
+        data_tests:
+          - not_null
+      - name: description
+        description: What was planted, with any employee ID replaced by "[employee]".
+
+  - name: score_flags
+    description: >
+      Every row flagged by the ten checks, as check name and entity key only.
+      Severity is left out: scoring only asks whether a row was flagged.
+    columns:
+      - name: check_name
+        data_tests:
+          - not_null
+      - name: entity_key
+        data_tests:
+          - not_null
+
+  - name: score_population
+    description: >
+      The population each check examines (inventory/scoring_method.md), used as
+      the denominator for the false-positive rate. One row per check per entity.
+    columns:
+      - name: check_name
+        data_tests:
+          - not_null
+      - name: entity_key
+        data_tests:
+          - not_null
+
+  - name: score_case_results
+    description: >
+      One row per check per item examined (plus any answer-key case outside the
+      population), with whether it was flagged, its answer-key case if any, and
+      its outcome: TP, FN, FP (look-alike), FP (other), TN (look-alike) or TN.
+    columns:
+      - name: outcome
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["TP", "FN", "FP (look-alike)", "FP (other)", "TN (look-alike)", "TN"]
+
+  - name: score_accuracy_by_check
+    description: >
+      Precision, recall, false-positive rate and look-alike false-positive rate
+      per check, with the counts behind them. Rates are empty where their
+      denominator is zero.
+    columns:
+      - name: check_name
+        data_tests:
+          - unique
+          - not_null

@@ -24,6 +24,7 @@ flags:
 #   asa_staging       cleaned, typed and masked copies of the raw tables
 #   asa_intermediate  joins across tables, e.g. a person's access in every system
 #   asa_checks        one table per check, listing its exceptions
+#   asa_scoring       the answer key and each check's accuracy against it
 models:
   access_spend_assurance:
     staging:
@@ -38,3 +39,8 @@ models:
     checks:
       +schema: checks
       +materialized: table   # a fixed list of exceptions to score and investigate
+    scoring:
+      # Kept in its own dataset because it holds the answer key. The agent's
+      # read-only account is never granted asa_scoring (inventory/scoring_method.md).
+      +schema: scoring
+      +materialized: table

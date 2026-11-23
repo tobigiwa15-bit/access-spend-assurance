@@ -1,0 +1,14 @@
+# The answer key, loaded into asa_raw with the company data. It is declared as
+# its own source, apart from the company tables in staging/_sources.yml, because
+# only the scoring models may read it.
+version: 2
+
+sources:
+  - name: answer_key
+    database: "{{ env_var('GCP_PROJECT_ID') }}"
+    schema: asa_raw
+    tables:
+      - name: answer_key
+        description: >
+          The planted issues and look-alikes, one row per case, as written by
+          generate/plant_issues.py. Entity IDs and descriptions are raw here.

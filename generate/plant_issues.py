@@ -307,11 +307,13 @@ def plant_access(t, rng, as_of, at_work):
 
 
 # --- Spend issues -----------------------------------------------------------
-def plant_spend(t, rng, as_of, spend_start, threshold, pick_holder, fake):
+def plant_spend(t, rng, as_of, spend_start, threshold, pick_holder, fake, first_use_days):
     """Plant the spend issues and look-alikes. Returns the answer-key cases.
 
     pick_holder(rng, role, day) picks someone who held the role that day in the
     clean access data, so every planted transaction is done by a plausible person.
+    first_use_days: an existing vendor is only used from this many days after its
+    approval, the same rule the clean data follows.
     """
     key = []
     used = set()   # vendors already in a case
@@ -337,6 +339,12 @@ def plant_spend(t, rng, as_of, spend_start, threshold, pick_holder, fake):
         while day.weekday() >= 5:
             day += timedelta(days=1)
         return day
+
+    def ready_from(vendor):
+        # The first day an existing vendor can be used. Without this, a planted
+        # PO or payment could be dated before the vendor existed (fixed 2026-11-23;
+        # see inventory/scoring_method.md, "Changes to the test data").
+        return vendor["approved_date"] + timedelta(days=first_use_days)
 
     def ad_hoc_vendors_with_payments():
         return [v for v in t["vendors"] if v["billing"] == "ad hoc" and v["vendor_id"] not in used
@@ -421,6 +429,8 @@ def plant_spend(t, rng, as_of, spend_start, threshold, pick_holder, fake):
         other_dates = [p["po_date"] for p in pos_of.get(v["vendor_id"], [])]
         # Late enough in the period to leave room for PO, invoice and payment before AS_OF.
         day = weekday_in(spend_start + timedelta(days=20), as_of - timedelta(days=95))
+        if day < ready_from(v):
+            continue
         if any(abs((day - d).days) < 25 for d in other_dates):
             continue
         parts = rng.choice([2, 3])
@@ -494,9 +504,17 @@ def plant_spend(t, rng, as_of, spend_start, threshold, pick_holder, fake):
 
     # 6. Payments with no invoice behind them.
     pool = ad_hoc_vendors_with_payments()
-    for v in rng.sample(pool, N_NO_INVOICE_PAYMENTS):
+    payments_done = 0
+    for v in rng.sample(pool, len(pool)):
+        if payments_done == N_NO_INVOICE_PAYMENTS:
+            break
+        earliest = max(spend_start + timedelta(days=30), ready_from(v))
+        latest = as_of - timedelta(days=5)
+        if earliest + timedelta(days=7) > latest:    # at least a week, so it has a weekday
+            continue
         used.add(v["vendor_id"])
-        day = weekday_in(spend_start + timedelta(days=30), as_of - timedelta(days=5))
+        payments_done += 1
+        day = weekday_in(earliest, latest)
         pay = add_payment(v, None, day, round(rng.uniform(300_000, 4_800_000), 2))
         add_case(key, "payment_without_invoice", "seeded_issue", "payment", pay, "payment_id",
                  f"Payment of {pay['amount']:,.2f} on {day} with no invoice")
