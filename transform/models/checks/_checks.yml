@@ -1,0 +1,213 @@
+# Descriptions and tests for the check models. Each check implements one rule in
+# inventory/check_rules.md and outputs one row per exception.
+version: 2
+
+models:
+  - name: chk_leaver_active_account
+    description: >
+      Check 1. Accounts that kept working past the grace period after their
+      owner's termination date: still active (Open) or disabled after the grace
+      period (Disabled late). Rehires in an ongoing engagement whose open access
+      is all entitled are excluded. Logins after termination only raise severity.
+    columns:
+      - name: account_id
+        data_tests:
+          - unique
+          - not_null
+      - name: exception_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["Open", "Disabled late"]
+      - name: days_late
+        description: Calendar days the account worked after the grace period ended.
+      - name: severity
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["Critical", "High", "Medium"]
+
+  - name: chk_privileged_without_approval
+    description: >
+      Check 2. Privileged grants, open now or made in the review period, without
+      a valid approval. Standard grants need an independent approval dated on or
+      before the grant. Emergency grants need an independent approval by T+1 and
+      removal within 3 calendar days. failure_reasons lists every reason.
+    columns:
+      - name: grant_id
+        data_tests:
+          - unique
+          - not_null
+      - name: failure_reasons
+        data_tests:
+          - not_null
+      - name: severity
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["High", "Medium"]
+
+  - name: chk_sod_conflict
+    description: >
+      Check 3. People who held both functions of an SoD rule at the same time,
+      across any systems, during the review period. conflict_status says whether
+      the conflict is current (held on the as-of date), historical, or both.
+    columns:
+      - name: employee_hash
+        data_tests:
+          - unique
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_employees')
+                field: employee_hash
+      - name: conflict_status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["Current", "Historical", "Both"]
+      - name: severity
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["High", "Medium"]
+
+  - name: chk_dormant_privileged_account
+    description: >
+      Check 4. Active accounts with open privileged access, at least 30 days old,
+      with no login in the 30 days to the as-of date. dormancy separates accounts
+      with no login in the whole 90-day history.
+    columns:
+      - name: account_id
+        data_tests:
+          - unique
+          - not_null
+      - name: privileged_roles
+        data_tests:
+          - not_null
+      - name: dormancy
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["No login in available history (90+ days)", "No login in the last 30 days"]
+
+  - name: chk_access_not_removed_after_move
+    description: >
+      Check 5. Grants made before a current employee's latest move, for roles
+      they are not entitled to now, still held after the grace period (3 days,
+      or none if privileged or in SoD conflict with the new role).
+    columns:
+      - name: grant_id
+        data_tests:
+          - unique
+          - not_null
+      - name: exception_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["Open", "Removed late"]
+      - name: days_late
+        description: Calendar days the old access was held after the grace period ended.
+
+  - name: chk_duplicate_invoice
+    description: >
+      Check 6. The later invoice of each pair from the same vendor that matches
+      on tidied number and amount (Tier 1), tidied number only (Tier 2), or amount
+      within 7 days (Tier 3). Paired with its earliest match at its strongest tier.
+      Severity comes from whether the two invoices were paid.
+    columns:
+      - name: invoice_id
+        data_tests:
+          - unique
+          - not_null
+      - name: matched_invoice_id
+        data_tests:
+          - not_null
+      - name: tier
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3]
+                quote: false     # numbers, not text: without this dbt writes '1', which BigQuery won't compare with a number
+      - name: severity
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["Critical", "High", "Medium"]
+
+  - name: chk_split_purchase
+    description: >
+      Check 7. POs in any 7-day window, same vendor and requester, where every PO
+      is within the approval limit but the total is above it. POs above the limit
+      are set aside first. Each PO shows the window that rates it highest.
+    columns:
+      - name: po_id
+        data_tests:
+          - unique
+          - not_null
+      - name: group_po_count
+        description: Number of POs in the window. Always at least 2, because each PO is within the limit and the total is above it.
+      - name: severity
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["High", "Medium"]
+
+  - name: chk_vendor_bank_matches_employee
+    description: >
+      Check 8. Vendors whose bank account (compared by keyed hash) matches a
+      current or former employee's salary account. Severity depends on whether
+      the vendor was paid or created while the person was employed, and whether
+      they created or approved the vendor themselves.
+    columns:
+      - name: vendor_id
+        data_tests:
+          - unique
+          - not_null
+      - name: employee_hash
+        data_tests:
+          - not_null
+      - name: severity
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["Critical", "High", "Medium"]
+
+  - name: chk_vendor_created_and_paid_same_day
+    description: >
+      Check 9. Vendors created in the review period whose first payment came
+      within 3 business days of creation. Critical if paid the same day or before
+      approval; High otherwise. Reports all payments in the window and their total.
+    columns:
+      - name: vendor_id
+        data_tests:
+          - unique
+          - not_null
+      - name: business_days_to_first_payment
+        data_tests:
+          - not_null
+      - name: severity
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["Critical", "High"]
+
+  - name: chk_payment_without_invoice
+    description: >
+      Check 10. Payments with no invoice ID, an invoice ID that doesn't exist, or
+      another vendor's invoice (Critical), and payments that take the total paid
+      on an invoice above its amount plus the rounding tolerance (High).
+      unsupported_amount is the part of each payment with no invoice behind it.
+    columns:
+      - name: payment_id
+        data_tests:
+          - unique
+          - not_null
+      - name: unsupported_amount
+        data_tests:
+          - not_null
+      - name: severity
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["Critical", "High"]

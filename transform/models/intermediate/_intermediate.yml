@@ -1,0 +1,118 @@
+# Descriptions and tests for the intermediate models.
+version: 2
+
+models:
+  - name: int_grants
+    description: >
+      Every grant ever made, joined to its account (whose it is, which system)
+      and its role (privileged or not, SoD function). One row per grant.
+    columns:
+      - name: grant_id
+        description: >
+          Unique here too. If a join matched a grant to two accounts or two roles,
+          the grant would appear twice and this test would fail.
+        data_tests:
+          - unique
+          - not_null
+      - name: employee_hash
+        data_tests:
+          - not_null
+      - name: is_privileged
+        data_tests:
+          - not_null
+      - name: held_until
+        description: >
+          The first day the grant is no longer held: the revoke date, or the day
+          after the as-of date for a grant that is still open.
+        data_tests:
+          - not_null
+
+  - name: int_employment_periods
+    description: >
+      Each stretch of employment, from a joiner or rehire event to the next leaver
+      event. A rehired leaver has two rows. last_day is inclusive and empty while
+      the period is ongoing.
+    columns:
+      - name: employee_hash
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_employees')
+                field: employee_hash
+      - name: started_by
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["joiner", "rehire"]
+      - name: start_date
+        data_tests:
+          - not_null
+
+  - name: int_employees
+    description: >
+      One row per person: level from job title, whether employed on the as-of
+      date (counting rehires), and their latest move and rehire dates.
+    columns:
+      - name: employee_hash
+        data_tests:
+          - unique
+          - not_null
+      - name: level
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["staff", "lead", "head"]
+      - name: is_employed
+        data_tests:
+          - not_null
+
+  - name: int_accounts
+    description: >
+      Every account with its last login date and number of login days in the
+      90-day login window. Accounts with no logins have an empty last_login_date
+      and login_days of 0.
+    columns:
+      - name: account_id
+        data_tests:
+          - unique
+          - not_null
+      - name: employee_hash
+        data_tests:
+          - not_null
+      - name: login_days
+        data_tests:
+          - not_null
+
+  - name: int_invoices
+    description: >
+      Every invoice with its tidied invoice number (tidy_invoice_number macro),
+      the number of payments linked to it, the total paid, and whether it is paid.
+    columns:
+      - name: invoice_id
+        data_tests:
+          - unique
+          - not_null
+      - name: invoice_number_tidy
+        data_tests:
+          - not_null
+      - name: is_paid
+        data_tests:
+          - not_null
+
+  - name: int_entitlements
+    description: >
+      The roles each person is entitled to under the role matrix, for their
+      current department and level, with the two allowances in the rule book's
+      "Entitled role" definition. One row per person per role.
+    columns:
+      - name: employee_hash
+        data_tests:
+          - not_null
+      - name: role
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_roles')
+                field: role

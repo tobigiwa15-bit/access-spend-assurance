@@ -6,6 +6,15 @@ profile: access_spend_assurance   # the connection to use, defined in profiles.y
 model-paths: ["models"]
 test-paths: ["tests"]
 
+# Settings every check shares, from "Facts every rule can rely on" in
+# inventory/check_rules.md. Models read them with {{ var('as_of_date') }}, so
+# each one is written down once.
+vars:
+  as_of_date: "2026-09-30"      # "today" for every check
+  review_start: "2024-10-01"    # first day of the review period
+  approval_limit: 5000000       # the most a Procurement team lead may approve on one PO
+  rounding_tolerance: 1         # naira allowed for rounding before a payment counts as more than its invoice
+
 # Don't send anonymous usage statistics to dbt Labs.
 flags:
   send_anonymous_usage_stats: false

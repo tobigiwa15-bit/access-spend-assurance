@@ -328,12 +328,16 @@ models:
         description: >
           Empty when a payment has no invoice. That is a control finding for the
           checks, so it is not tested as not_null; the relationships test ignores
-          empty values.
+          empty values. The relationships test only warns: a payment quoting an
+          invoice that doesn't exist is reported by check 10, so it mustn't stop
+          the build before check 10 runs.
         data_tests:
           - relationships:
               arguments:
                 to: ref('stg_invoices')
                 field: invoice_id
+              config:
+                severity: warn
       - name: amount
         data_tests:
           - not_null
